@@ -21,14 +21,20 @@ import nc.tile.energy.ITileEnergy;
 import nc.tile.energy.TileEnergySidedInventory;
 import nc.tile.internal.energy.EnergyConnection;
 import nc.tile.internal.fluid.Tank;
+import nc.tile.internal.inventory.InventoryConnection;
 import nc.tile.internal.inventory.ItemOutputSetting;
 import nc.tile.internal.inventory.ItemSorption;
 import nc.tile.inventory.ITileInventory;
+import nc.util.NCInventoryHelper;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.math.MathHelper;
+import net.minecraftforge.items.CapabilityItemHandler;
+import net.minecraftforge.items.IItemHandler;
+import net.minecraftforge.items.ItemHandlerHelper;
 
 public class TileItemProcessor extends TileEnergySidedInventory implements IItemProcessor, IGui<ProcessorUpdatePacket>, IUpgradable {
 	
@@ -41,7 +47,9 @@ public class TileItemProcessor extends TileEnergySidedInventory implements IItem
 	
 	public final boolean shouldLoseProgress, hasUpgrades;
 	public final int processorID, sideConfigYOffset;
-	
+
+	private int pushCooldown;
+
 	public final ProcessorRecipeHandler recipeHandler;
 	protected RecipeInfo<ProcessorRecipe> recipeInfo;
 	
@@ -110,6 +118,16 @@ public class TileItemProcessor extends TileEnergySidedInventory implements IItem
 			else {
 				getRadiationSource().setRadiationLevel(0D);
 				if (time > 0 && (!isHaltedByRedstone() || !readyToProcess())) loseProgress();
+				if (wasProcessing) {
+					pushCooldown = 50;
+				}
+				if (pushCooldown <= 0) {
+					for (int i = 0; i < itemOutputSize; i++) {
+						pushItemProducts(i + itemInputSize);
+					}
+					pushCooldown = 50;
+				}
+				pushCooldown--;
 			}
 			if (wasProcessing != isProcessing) {
 				shouldUpdate = true;
@@ -265,7 +283,25 @@ public class TileItemProcessor extends TileEnergySidedInventory implements IItem
 				int count = Math.min(getInventoryStackLimit(), getInventoryStacks().get(j + itemInputSize).getCount() + itemProduct.getNextStackSize(0));
 				getInventoryStacks().get(j + itemInputSize).setCount(count);
 			}
+			pushItemProducts(j+itemInputSize);
 		}
+	}
+
+	private void pushItemProducts(int slot) {
+		ItemStack stackInSlot = getInventoryStacks().get(slot);
+		if (stackInSlot.isEmpty()) return;
+		InventoryConnection[] connections = getInventoryConnections();
+		for (EnumFacing side : EnumFacing.VALUES) {
+			if (connections[side.ordinal()].getItemSorption(slot) == ItemSorption.PUSH)	{
+				TileEntity tile = world.getTileEntity(pos.offset(side));
+				if (tile == null) continue;
+				IItemHandler inventory = tile.getCapability(CapabilityItemHandler.ITEM_HANDLER_CAPABILITY, side.getOpposite());
+				if (inventory == null) continue;
+				stackInSlot = ItemHandlerHelper.insertItemStacked(inventory, stackInSlot, false);
+				if (stackInSlot.isEmpty()) break;
+			}
+		}
+		getInventoryStacks().set(slot, stackInSlot);
 	}
 	
 	public void loseProgress() {
@@ -417,6 +453,7 @@ public class TileItemProcessor extends TileEnergySidedInventory implements IItem
 		nbt.setDouble("resetTime", resetTime);
 		nbt.setBoolean("isProcessing", isProcessing);
 		nbt.setBoolean("canProcessInputs", canProcessInputs);
+		nbt.setInteger("pushCooldown", pushCooldown);
 		return nbt;
 	}
 	
@@ -430,6 +467,7 @@ public class TileItemProcessor extends TileEnergySidedInventory implements IItem
 		if (nbt.hasKey("redstoneControl")) {
 			setRedstoneControl(nbt.getBoolean("redstoneControl"));
 		} else setRedstoneControl(true);
+		pushCooldown = nbt.getInteger("pushCooldown");
 	}
 	
 	// IGui
